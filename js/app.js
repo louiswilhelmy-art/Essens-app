@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -62,6 +62,7 @@ const S = {
   today: { steps: [], options: [], directions: [], shown: [], loading: false, error: "" },
   plan: { days: {} }, requests: [], pantryFilter: "alle", household: null, people: null, me: null, names: {}, planWeek: 0, planSpan: 1,
   ai: { provider: "gemini", keys: {}, models: {}, prices: {}, budget: 0 }, usage: { days: {} }, settingsOpen: false,
+  queue: { items: [], running: false, stop: false }, queueSheet: null,
   drafts: {}, todayMode: "lust", howto: { q: "", options: [], loading: false, error: "" },
   ideaFilter: null, ideaQuery: "", ideaLoading: false, ideaError: "",
   tab: "plan", openRecipe: null, servings: {},
@@ -388,7 +389,87 @@ function openSheet(html, mount) {
   $("#scrim").addEventListener("click", e => { if (e.target.id === "scrim") closeSheet(); });
   if (mount) mount(o.querySelector(".sheet"));
 }
-function closeSheet() { $("#overlay").innerHTML = ""; }
+function closeSheet() { $("#overlay").innerHTML = ""; S.queueSheet = null; }
+
+/* ---------- Mehrere Links: Warteschlange ---------- */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function extractUrls(t) { return [...new Set((String(t || "").match(/https?:\/\/[^\s<>"'„“]+/g) || []).map(u => u.replace(/[),.;!?]+$/, "")))]; }
+function linkReadable(url) { return typeof AI !== "undefined" && (AI.canWatch(url) || AI.canRead(url)); }
+const QSTATE = { wartet: ["Wartet", "neutral"], läuft: ["Läuft …", "warn"], fertig: ["Fertig", "good"], hinweis: ["Braucht Hinweis", "warn"], fehler: ["Fehler", "bad"], doppelt: ["Schon da", "neutral"] };
+function queueAdd(urls, note) {
+  urls.forEach(u => { if (!S.queue.items.some(x => x.url === u && x.status !== "fertig")) S.queue.items.push({ id: uid(), url: u, status: "wartet", note: note || "", msg: "" }); });
+  queueRun();
+}
+function queueCounts() { const c = {}; S.queue.items.forEach(x => c[x.status] = (c[x.status] || 0) + 1); return c; }
+function queueCardHtml() {
+  const Q = S.queue; if (!Q.items.length) return `<div id="q-card"></div>`;
+  const c = queueCounts(), total = Q.items.length, done = total - (c.wartet || 0) - (c["läuft"] || 0);
+  const running = c.wartet || c["läuft"];
+  return `<div id="q-card" class="profile" style="margin-bottom:12px">
+    <div class="row" style="justify-content:space-between"><b>${running ? "Import läuft" : "Import fertig"}</b><span class="num small">${done} von ${total}</span></div>
+    <div class="bar" aria-hidden="true"><i style="width:${Math.round(done / total * 100)}%"></i></div>
+    <span class="small muted">${c.fertig || 0} fertig${c.hinweis ? ` · ${c.hinweis} brauchen einen Hinweis` : ""}${c.fehler ? ` · ${c.fehler} Fehler` : ""}${c.doppelt ? ` · ${c.doppelt} schon da` : ""}${running ? " · App bitte offen lassen" : ""}</span>
+    <button class="btn" data-queue-open>Liste ansehen</button></div>`;
+}
+function queueRefresh() {
+  if (S.queueSheet && document.contains(S.queueSheet)) drawQueue(S.queueSheet);
+  const el = $("#q-card"); if (el) el.outerHTML = queueCardHtml();
+}
+document.addEventListener("click", e => { if (e.target.closest("[data-queue-open]")) queueSheet(); });
+function queueSheet() { openSheet("", sh => { S.queueSheet = sh; drawQueue(sh); }); }
+function drawQueue(sh) {
+  const Q = S.queue, c = queueCounts();
+  const keep = {}; sh.querySelectorAll("[data-qnote]").forEach(i => keep[i.dataset.qnote] = i.value);
+  sh.innerHTML = `<h3>Import-Liste</h3>
+    <div class="list">${Q.items.map(it => { const [l, cls] = QSTATE[it.status] || ["", "neutral"]; return `
+      <div class="item" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div class="row" style="gap:10px">${it.status === "läuft" ? `<span class="spinner" style="color:var(--warm)"></span>` : ""}
+          <span class="grow small" style="overflow-wrap:anywhere">${it.title ? `<b>${esc(it.title)}</b><br>` : ""}<span class="muted tiny">${esc(it.url)}</span></span>
+          <span class="pill ${cls}">${l}</span></div>
+        ${it.msg && it.status !== "fertig" ? `<span class="small muted">${esc(it.msg)}</span>` : ""}
+        ${it.status === "fertig" ? `<button class="linkbtn small" data-qopen="${it.recipeId}" style="align-self:flex-start">Rezept öffnen</button>` : ""}
+        ${it.status === "hinweis" || it.status === "fehler" ? `<div class="row"><input class="grow" data-qnote="${it.id}" value="${esc(keep[it.id] ?? it.note ?? "")}" placeholder="Was wird gekocht? z. B. Gnocchi mit Feta" style="border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 10px"><button class="btn" data-qretry="${it.id}">Nochmal</button></div>` : ""}
+      </div>`; }).join("")}</div>
+    <div class="row" style="flex-wrap:wrap">${c.wartet || c["läuft"] ? `<button class="btn grow" id="q-stop">Anhalten</button>` : Q.items.some(x => x.status === "wartet") ? "" : ""}
+      ${!Q.running && c.wartet ? `<button class="btn primary grow" id="q-go">Weiter</button>` : ""}
+      <button class="btn grow" id="q-clean">Erledigte entfernen</button><button class="btn grow" id="q-close">Schließen</button></div>`;
+  sh.querySelectorAll("[data-qopen]").forEach(b => b.onclick = () => { closeSheet(); S.openRecipe = b.dataset.qopen; render(); window.scrollTo(0, 0); });
+  sh.querySelectorAll("[data-qretry]").forEach(b => b.onclick = () => { const it = Q.items.find(x => x.id === b.dataset.qretry); const inp = sh.querySelector(`[data-qnote="${it.id}"]`); it.note = inp ? inp.value.trim() : it.note; it.status = "wartet"; it.msg = ""; it.retried = false; queueRun(); queueRefresh(); });
+  const st = sh.querySelector("#q-stop"); if (st) st.onclick = () => { Q.stop = true; toast("Wird nach dem aktuellen Link angehalten"); };
+  const go = sh.querySelector("#q-go"); if (go) go.onclick = () => queueRun();
+  sh.querySelector("#q-clean").onclick = () => { Q.items = Q.items.filter(x => !["fertig", "doppelt"].includes(x.status)); queueRefresh(); if (!Q.items.length) { closeSheet(); render(); } };
+  sh.querySelector("#q-close").onclick = () => { closeSheet(); render(); };
+}
+async function queueRun() {
+  const Q = S.queue; if (Q.running) return; Q.running = true; Q.stop = false; queueRefresh();
+  while (!Q.stop) {
+    const it = Q.items.find(x => x.status === "wartet"); if (!it) break;
+    it.status = "läuft"; it.msg = ""; queueRefresh();
+    try {
+      if (Object.values(S.recipes).some(r => r.url && r.url === it.url)) { it.status = "doppelt"; it.msg = "Ist schon in deinen Rezepten."; }
+      else if (isVideoUrl(it.url) && !linkReadable(it.url) && !it.note) { it.status = "hinweis"; it.msg = "Das Video kann die KI hier nicht ansehen. Schreib kurz, was gekocht wird."; }
+      else {
+        const raw = await askClaudeJSON(importPrompt(it.url, "", it.note || "", linkReadable(it.url)), [], { link: it.url });
+        const r = cleanRecipe(raw, it.url); if (!r.ingredients.length) throw new Error("leer");
+        r.createdAt = Date.now();
+        if (typeof AI !== "undefined") { if (ytThumb(it.url)) r.photoUrl = ytThumb(it.url); else if (raw && /^https:\/\//.test(raw.imageUrl || "")) r.photoUrl = raw.imageUrl; }
+        const id = "r_" + uid(); S.recipes[id] = r; Store.save(id);
+        it.status = "fertig"; it.recipeId = id; it.title = r.title;
+        if (r.confidence === "niedrig") it.msg = "Nur aus dem Link geschätzt.";
+        if (S.tab === "rezepte" && !S.openRecipe && !S.queueSheet && !S.settingsOpen && document.activeElement?.id !== "r-search" && !$("#overlay").innerHTML) render();
+      }
+    } catch (e) {
+      if (e && e.code === "unknown_dish") { it.status = "hinweis"; it.msg = "Gericht nicht erkennbar. Schreib kurz, was gekocht wird."; }
+      else if (e && e.code === "rate_limited" && !it.retried) { it.retried = true; it.status = "wartet"; it.msg = "Kurze Pause wegen Limit …"; queueRefresh(); await sleep(30000); continue; }
+      else if (e && ["budget", "not_granted", "bad_key", "no_credit"].includes(e.code)) { it.status = "fehler"; it.msg = sampleErrorText(e); Q.stop = true; }
+      else { it.status = "fehler"; it.msg = sampleErrorText(e); }
+    }
+    queueRefresh();
+    if (Q.items.some(x => x.status === "wartet")) await sleep(typeof AI !== "undefined" && AI.provider() === "gemini" ? 4500 : 1500);
+  }
+  Q.running = false; queueRefresh();
+  if (!Q.items.some(x => x.status === "wartet")) { const n = Q.items.filter(x => x.status === "fertig").length; toast(`Import fertig: ${n} ${n === 1 ? "Rezept" : "Rezepte"}`); if (S.tab === "rezepte" && !S.openRecipe && !S.queueSheet) render(); }
+}
 function confirmSheet(title, text, okLabel, onOk, danger) {
   openSheet(`<h3>${esc(title)}</h3><p class="muted" style="margin:0">${esc(text)}</p>
     <div class="row"><button class="btn grow" id="c-no">Abbrechen</button><button class="btn grow ${danger ? "danger" : "primary"}" id="c-ok">${esc(okLabel)}</button></div>`, sh => {
@@ -609,6 +690,7 @@ function viewRecipes() {
   const list = filteredRecipes();
   return `
   <header class="top"><h1>Rezepte</h1><div class="hdr-r"><button class="btn primary" id="r-import">+ Neues Rezept</button>${themeBtn()}</div></header>
+  ${queueCardHtml()}
   ${all.length ? `
   <div class="stack">
     <div class="search">${ICON.search}<input id="r-search" placeholder="z. B. Sommerpasta, Winteressen, schnell vegetarisch" value="${esc(S.recipeQuery)}" autocomplete="off" aria-label="Rezepte durchsuchen"></div>
@@ -645,7 +727,8 @@ function importSheet() {
     ${unavailable ? `<div class="banner bad">Verbinde zuerst eine KI: Zahnrad oben rechts → KI-Anbieter und Schlüssel.</div>` : ""}
     <div class="seg" id="i-mode" style="grid-template-columns:1fr 1fr"><button type="button" data-m="link" aria-pressed="true">Aus Link</button><button type="button" data-m="self" aria-pressed="false">Selbst gekocht</button></div>
     <div class="stack" id="i-link">
-      <div class="field"><label for="i-url">Link (YouTube, Instagram, Chefkoch, Blog …)</label><input id="i-url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></div>
+      <div class="field"><label for="i-url">Link – oder gleich mehrere</label><textarea id="i-url" inputmode="url" rows="1" placeholder="https://…" autocomplete="off" style="min-height:48px;resize:none"></textarea>
+        <span class="muted tiny" id="i-urlhint">YouTube, Instagram, Chefkoch, Blogs … Mehrere Links einfach untereinander einfügen.</span></div>
       <div class="field"><label for="i-note">Anmerkung (optional)</label><input id="i-note" autocomplete="off" placeholder="z. B. Gnocchi mit Feta · 100 g mehr Nudeln · noch Spinat dazu">
         <span class="muted tiny">Bei Videos hilft der Name des Gerichts. Änderungswünsche werden direkt ins Rezept eingearbeitet.</span></div>
     </div>
@@ -679,6 +762,14 @@ function importSheet() {
         : "Screenshot von der Rezeptseite oder dem Video. Am Computer kannst du ein kopiertes Bild auch einfach einfügen (Strg+V).";
     };
     sh.querySelector("#i-url").addEventListener("input", updHint);
+    const urlBox = sh.querySelector("#i-url");
+    const updMany = () => {
+      urlBox.style.height = "auto"; urlBox.style.height = Math.min(220, urlBox.scrollHeight + 2) + "px";
+      const n = extractUrls(urlBox.value).length;
+      const go = sh.querySelector("#i-go"); if (!go.disabled && mode === "link") go.textContent = n > 1 ? `${n} Rezepte importieren` : "Rezept erstellen";
+      sh.querySelector("#i-urlhint").textContent = n > 1 ? `${n} Links erkannt. Sie werden nacheinander abgearbeitet; den Fortschritt siehst du unter Rezepte.` : "YouTube, Instagram, Chefkoch, Blogs … Mehrere Links einfach untereinander einfügen.";
+    };
+    urlBox.addEventListener("input", updMany);
     const onPaste = async e => {
       const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith("image/"));
       if (!files.length) return;
@@ -702,7 +793,13 @@ function importSheet() {
     sh.querySelector("#i-cancel").onclick = () => { mic.stop(); closeSheet(); };
     sh.querySelector("#i-go").onclick = async () => {
       mic.stop();
-      const url = mode === "link" ? sh.querySelector("#i-url").value.trim() : "";
+      const urls = mode === "link" ? extractUrls(sh.querySelector("#i-url").value) : [];
+      if (urls.length > 1) {
+        const note = sh.querySelector("#i-note").value.trim();
+        queueAdd(urls, note); closeSheet(); S.tab = "rezepte"; S.openRecipe = null; render(); window.scrollTo(0, 0);
+        toast(`${urls.length} Links in der Warteschlange`); return;
+      }
+      const url = mode === "link" ? (urls[0] || sh.querySelector("#i-url").value.trim()) : "";
       const note = mode === "link" ? sh.querySelector("#i-note").value.trim() : "";
       const text = mode === "self" ? ta.value.trim() : "";
       const imgs = photos;
