@@ -87,18 +87,31 @@ const AI = {
     for (const b of (images || []).slice(0, 4)) imgs.push(await blobToB64(b));
     let text = "", inTok = 0, outTok = 0;
     if (p === "gemini") {
-      const parts = [];
       const link = opts.link || "";
-      if (this.canWatch(link)) parts.push({ file_data: { file_uri: "https://www.youtube.com/watch?v=" + ytId(link) } });
-      imgs.forEach(i => parts.push({ inline_data: { mime_type: i.type, data: i.data } }));
-      parts.push({ text: prompt });
-      const body = { contents: [{ role: "user", parts }] };
-      if (this.canRead(link)) body.tools = [{ url_context: {} }];
-      else body.generationConfig = { responseMimeType: "application/json" };
-      const r = await apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      /* Versuch 1: mit Video bzw. URL-Tool; falls Gemini das ablehnt, Versuch 2 ohne (nur Text/Bilder) */
+      const build = (withLink) => {
+        const parts = [];
+        if (withLink && this.canWatch(link)) parts.push({ file_data: { file_uri: "https://www.youtube.com/watch?v=" + ytId(link) } });
+        imgs.forEach(i => parts.push({ inline_data: { mime_type: i.type, data: i.data } }));
+        parts.push({ text: withLink ? prompt : prompt + (link ? "\n\n(Hinweis: Der Link konnte nicht geöffnet werden. Erfinde nichts; wenn das Gericht nicht erkennbar ist, antworte {\"error\": \"unbekannt\"}.)" : "") });
+        const body = { contents: [{ role: "user", parts }] };
+        if (withLink && this.canRead(link)) body.tools = [{ url_context: {} }];
+        else body.generationConfig = { responseMimeType: "application/json" };
+        return body;
+      };
+      const call = body => apiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
         method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body),
       });
-      text = (r.candidates?.[0]?.content?.parts || []).map(x => x.text || "").join("");
+      const usesLink = this.canWatch(link) || this.canRead(link);
+      let r;
+      try { r = await call(build(true)); }
+      catch (e) { if (usesLink && e && (e.code === "server" || e.code === "bad_request")) r = await call(build(false)); else throw e; }
+      const parts = r.candidates?.[0]?.content?.parts || [];
+      text = parts.filter(x => !x.thought).map(x => x.text || "").join("");
+      if (!text.trim()) {
+        const fr = r.candidates?.[0]?.finishReason || r.promptFeedback?.blockReason || "";
+        throw { code: "server", detail: { error: { message: "Leere Antwort von Gemini" + (fr ? " (" + fr + ")" : "") } } };
+      }
       const u = r.usageMetadata || {};
       inTok = (u.promptTokenCount || 0) + (u.toolUsePromptTokenCount || 0);
       outTok = (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
@@ -133,20 +146,38 @@ async function apiFetch(url, init) {
   try { res = await fetch(url, init); } catch (e) { throw { code: "network" }; }
   let body = null; try { body = await res.json(); } catch (e) {}
   if (!res.ok) {
-    const msg = JSON.stringify(body || {}).toLowerCase();
-    if (res.status === 429) throw { code: "rate_limited" };
-    if (res.status === 401 || res.status === 403 || msg.includes("api_key") || msg.includes("api key") || msg.includes("authentication")) throw { code: "bad_key" };
-    if (res.status === 404 || msg.includes("model")) throw { code: "bad_model", detail: body };
-    if (msg.includes("credit") || msg.includes("billing") || msg.includes("quota")) throw { code: "no_credit" };
-    throw { code: "server", status: res.status, detail: body };
+    const raw = body && (body.error?.message || body.error?.type || JSON.stringify(body)) || "";
+    const msg = String(raw).toLowerCase();
+    const detail = { status: res.status, message: String(raw).slice(0, 200) };
+    if (res.status === 429 || msg.includes("resource_exhausted") || msg.includes("rate limit")) throw { code: "rate_limited", detail };
+    if (res.status === 401 || res.status === 403 || msg.includes("api key not valid") || msg.includes("invalid x-api-key") || msg.includes("incorrect api key") || msg.includes("api_key_invalid")) throw { code: "bad_key", detail };
+    if (res.status === 404 && msg.includes("model")) throw { code: "bad_model", detail };
+    if (msg.includes("credit balance") || msg.includes("billing") || msg.includes("insufficient_quota")) throw { code: "no_credit", detail };
+    if (res.status === 400) throw { code: "bad_request", detail };
+    throw { code: "server", detail };
   }
   return body;
 }
 function parseJSONLoose(t) {
-  t = String(t || "").replace(/```(?:json)?/gi, "").trim();
-  try { return JSON.parse(t); } catch (e) {}
-  const a = t.indexOf("{"), b = t.lastIndexOf("}");
-  if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch (e) {} }
+  t = String(t || "");
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const cands = [];
+  if (fence) cands.push(fence[1]);
+  cands.push(t.trim());
+  /* jedes ausbalancierte {...} von außen nach innen probieren */
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== "{") continue;
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < t.length; j++) {
+      const c = t[j];
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true; else if (c === "{") depth++; else if (c === "}") { depth--; if (depth === 0) { cands.push(t.slice(i, j + 1)); break; } }
+    }
+    if (cands.length > 6) break;
+  }
+  let best = null;
+  for (const c of cands) { try { const v = JSON.parse(c); if (v && typeof v === "object") { if (!best || JSON.stringify(v).length > JSON.stringify(best).length) best = v; } } catch (e) {} }
+  if (best) return best;
   throw { code: "bad_json" };
 }
 function blobToB64(blob) {
@@ -164,11 +195,13 @@ function sampleErrorText(e) {
   if (c === "unknown_dish") return "Aus dem Link allein ist nicht erkennbar, welches Gericht es ist. Füge einen Screenshot vom Video hinzu (oder das Titelbild) oder schreib in die Anmerkung, was gekocht wird, z. B. „Gnocchi mit Tomaten und Feta“.";
   if (c === "not_granted") return "Verbinde zuerst eine KI: Zahnrad oben rechts → KI-Anbieter und Schlüssel.";
   if (c === "budget") return "Dein Wochenbudget ist aufgebraucht. In den Einstellungen kannst du es erhöhen.";
+  if (c === "bad_request") return "Die KI hat die Anfrage abgelehnt." + (e.detail?.message ? " Meldung: " + String(e.detail.message).slice(0, 160) : "");
   if (c === "rate_limited") return "Limit erreicht: zu viele Anfragen gerade oder Tageskontingent aufgebraucht. Später nochmal versuchen.";
   if (c === "bad_key") return "Der API-Schlüssel wird nicht akzeptiert. Prüf ihn in den Einstellungen.";
   if (c === "bad_model") return "Dieses Modell gibt es beim Anbieter nicht (mehr). Wähl in den Einstellungen ein anderes.";
   if (c === "no_credit") return "Beim Anbieter ist kein Guthaben mehr da.";
   if (c === "network") return "Keine Verbindung zur KI. Bist du online?";
-  if (c === "bad_json") return "Die Antwort der KI war unvollständig. Versuch es nochmal.";
-  return "Das hat nicht geklappt. Versuch es nochmal oder füge mehr Text ein.";
+  if (c === "bad_json") return "Die Antwort der KI war nicht lesbar. Versuch es nochmal.";
+  const d = e && e.detail && (e.detail.message || e.detail.error?.message);
+  return "Das hat nicht geklappt." + (d ? " Meldung der KI: " + String(d).slice(0, 160) : " Versuch es nochmal oder füge mehr Text ein.");
 }
