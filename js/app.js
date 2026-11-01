@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -78,7 +78,7 @@ const RECIPE_SCHEMA = `{
   "seasons": ["eine oder mehrere aus: ${SEASONS.join(", ")} (alle vier, wenn ganzjährig passend)"],
   "tags": ["8-14 Stichworte, klein: Stimmung/Charakter (leicht, frisch, deftig, wärmend, cremig, würzig, scharf, comfort food), Aufwand (schnell, unter 30 minuten, meal prep, einfach), Ernährung (vegetarisch, vegan, fleisch, fisch, proteinreich, low carb), Küche (italienisch, asiatisch, indisch, mexikanisch, deutsch, orientalisch), Anlass (feierabend, gäste, grillen, sonntag), Hauptzutaten"],
   "ingredients": [
-    {"name": "Grundform im Singular wie im Supermarkt, z.B. Zwiebel, Knoblauch, Spaghetti, Passierte Tomaten, Parmesan", "qty": 1, "unit": "eine aus: ${UNITS.join(", ")} oder null", "note": "Zusatz wie 'fein gewürfelt' oder ''", "aisle": "eine aus: ${AISLE_ORDER.join(", ")}", "staple": false}
+    {"name": "Grundform im Singular wie im Supermarkt, z.B. Zwiebel, Knoblauch, Spaghetti, Passierte Tomaten, Parmesan", "qty": 1, "unit": "eine aus: ${UNITS.join(", ")} oder null", "note": "Zusatz wie 'fein gewürfelt' oder ''", "aisle": "eine aus: ${AISLE_ORDER.join(", ")}", "staple": false, "role": "haupt | neben"}
   ],
   "steps": ["Kurze, klare Arbeitsschritte auf Deutsch"],
   "time": {"prep": 15, "cook": 25, "total": 40, "stated": 25, "why": "Ein Satz, warum die realistische Zeit von der Angabe abweicht"},
@@ -86,7 +86,10 @@ const RECIPE_SCHEMA = `{
   "swaps": [{"original": "Speck", "alternatives": ["vegetarische Speckwürfel", "vegane Speckwürfel", "Halloumi-Würfel"], "tip": "Kurzer Tipp, wie der Ersatz am besten klappt"}],
   "confidence": "hoch | mittel | niedrig",
   "sourceNote": "Ein Satz, woher die Angaben stammen"
-}`;
+}
+Regeln für die Zutaten:
+- "role": "haupt" für alles, was das Gericht ausmacht (Gemüse, Fleisch, Fisch, Tofu, Halloumi, Nudeln, Reis, Käse, Sahne, Brühe, Dosentomaten …). "neben" für Öl, Butter zum Braten, Salz, Pfeffer, Gewürze, kleine Mengen Kräuter, Essig, Zucker, Senf zum Abschmecken.
+- Fett, das nur zum Anbraten, Braten oder Einfetten dient (Öl, Butter, Ghee): "qty": null, "unit": null, "note": "zum Anbraten". Eine Menge nur angeben, wenn das Fett wesentlich ist (Dressing, Soße, Pesto, Marinade, Teig, Backen).`;
 function importPrompt(url, text, note, canRead) {
   if (note) text = (text ? text + "\n\n" : "") + "WICHTIG – Anmerkung des Nutzers, unbedingt ins Rezept einarbeiten (Mengen anpassen, Zutaten ergänzen oder weglassen, Schritte und Zeiten entsprechend ändern): " + note;
   return `Du wandelst ein Rezept in strukturierte Daten für eine Koch-App um. Antworte NUR mit einem JSON-Objekt nach diesem Schema, ohne Erklärtext:
@@ -124,7 +127,8 @@ function cleanRecipe(r, url) {
       name: String(i.name || "").slice(0, 60), qty: n(i.qty), unit: unitOk(i.unit), note: String(i.note || "").slice(0, 80),
       aisle: AISLE_ORDER.includes(i.aisle) ? i.aisle : (catalogFor(i.name)?.aisle || "Sonstiges"),
       staple: !!i.staple || STAPLES.includes(fold(i.name)),
-    })).filter(i => i.name),
+      role: i.role === "haupt" || i.role === "neben" ? i.role : null,
+    })).filter(i => i.name).map(i => { if (isFryFat(i)) { i.qty = null; i.unit = null; } if (!i.role) i.role = ingRole(i); return i; }),
     steps: (Array.isArray(r.steps) ? r.steps : []).map(s => String(s)).slice(0, 30),
     time: { prep: n(r.time?.prep), cook: n(r.time?.cook), total: n(r.time?.total), stated: n(r.time?.stated), why: String(r.time?.why || "") },
     confidence: ["hoch","mittel","niedrig"].includes(r.confidence) ? r.confidence : "mittel",
@@ -250,7 +254,7 @@ function othersHave(name, unit) {
 function defaultOwner(fromPlan) { return Store.shareMode() && S.household === "wg" && !fromPlan ? S.me : null; }
 function ingStatus(ing, factor) {
   if (ing.staple) return { st: "staple" };
-  const need = ing.qty != null ? ing.qty * factor : null;
+  const q = qtyOf(ing); const need = q != null ? q * factor : null;
   const m = pantryMatches(ing.name);
   if (!m.length) return { st: "missing", buy: need, have: null, others: Store.shareMode() ? othersHave(ing.name, ing.unit) : [] };
   if (need == null) return { st: "have", have: m };
@@ -261,9 +265,22 @@ function ingStatus(ing, factor) {
   if (haveV >= nb.v - 1e-9) return { st: "have", have: m };
   return { st: "partial", buy: fromBase(nb.v - haveV, ing.unit), have: m, others: Store.shareMode() ? othersHave(ing.name, ing.unit) : [] };
 }
+/* Haupt- und Nebenzutaten; Bratfett ohne Mengenangabe */
+const FATS = ["ol", "olivenol", "sonnenblumenol", "rapsol", "butter", "ghee", "butterschmalz", "kokosol", "pflanzenol", "bratol"];
+function isFat(name) { const w = fold(name).split(" "); return w.some(x => FATS.includes(x)); }
+function isFryFat(i) { return isFat(i.name) && /anbrat|braten|einfett|pfanne|zum fetten|fur die form/.test(fold(i.note || "")); }
+function qtyOf(i) { return isFryFat(i) ? null : i.qty; }
+const NEBEN_AISLES = ["Gewürze, Öle & Saucen"];
+function ingRole(i) {
+  if (i.role === "haupt" || i.role === "neben") return i.role;
+  if (i.staple || isFryFat(i) || isFat(i.name) && (i.qty == null || ["EL", "TL", "Prise"].includes(i.unit))) return "neben";
+  const a = i.aisle || catalogFor(i.name)?.aisle;
+  if (NEBEN_AISLES.includes(a) && !/tomat|kokosmilch|brühe|bruhe|pesto/.test(fold(i.name))) return "neben";
+  return "haupt";
+}
 function availability(r) {
   const f = 1; let total = 0, ok = 0;
-  r.ingredients.forEach(i => { if (i.staple) return; total++; const s = ingStatus(i, f).st; if (s === "have" || s === "check") ok++; });
+  r.ingredients.forEach(i => { if (i.staple || ingRole(i) === "neben") return; total++; const s = ingStatus(i, f).st; if (s === "have" || s === "check") ok++; });
   return { total, ok, frac: total ? ok / total : 1 };
 }
 function addToPantry(name, qty, unit, place, owner) {
@@ -710,7 +727,7 @@ function viewRecipe() {
   const sv = S.servings[S.openRecipe] || r.servings;
   const f = sv / r.servings;
   const rows = r.ingredients.map((i, idx) => ({ i, idx, s: ingStatus(i, f) }));
-  const missing = rows.filter(x => x.s.st === "missing" || x.s.st === "partial");
+  const missing = rows.filter(x => ingRole(x.i) === "haupt" && (x.s.st === "missing" || x.s.st === "partial"));
   const t = r.time || {};
   const pillFor = s => s.st === "have" ? `<span class="pill good">da</span>` : s.st === "check" ? `<span class="pill good">da · Menge prüfen</span>` : s.st === "partial" ? `<span class="pill warn">fehlt ${esc(fmtQty(s.buy, null))}</span>` : s.st === "staple" ? `<span class="pill neutral">Grundzutat</span>` : `<span class="pill bad">fehlt</span>`;
   return `
@@ -732,10 +749,16 @@ function viewRecipe() {
     <div class="servings"><span class="grow"><b>Portionen</b></span>
       <button class="qtybtn" id="sv-minus" aria-label="weniger Portionen">−</button><span class="num" style="min-width:28px;text-align:center;font-weight:700;font-size:18px">${sv}</span><button class="qtybtn" id="sv-plus" aria-label="mehr Portionen">+</button></div>
     <div class="section-h" style="margin:4px 0 0"><h2>Zutaten</h2><span class="small ${missing.length ? "muted" : ""}">${missing.length ? `${missing.length} fehlen` : `<span class="pill good">alles da</span>`}</span></div>
-    <div class="list">${rows.map(({ i, s }) => `
+    <div class="list">${rows.filter(x => ingRole(x.i) === "haupt").map(({ i, s }) => `
       <div class="ing"><span class="amt">${esc(fmtQty(i.qty != null ? i.qty * f : null, i.unit))}</span>
         <span>${esc(i.name)}${i.note ? `<br><span class="note">${esc(i.note)}</span>` : ""}${s.have && s.st !== "staple" ? `<br><span class="note">im Vorrat: ${s.have.map(p => esc(fmtQty(p.qty, p.unit))).join(" + ")}</span>` : ""}</span>
         ${pillFor(s)}${s.others && s.others.length ? `<span class="note" style="grid-column:2/4">Hat noch: ${s.others.map(o => esc(who(o.owner)) + " (" + esc(fmtQty(o.qty, o.unit)) + ")").join(", ")}</span>` : ""}</div>`).join("")}</div>
+    ${rows.some(x => ingRole(x.i) === "neben") ? `<div class="section-h" style="margin:6px 0 0"><h2 style="font-size:16px">Gewürze &amp; Basics</h2></div>
+    <div class="list">${rows.filter(x => ingRole(x.i) === "neben").map(({ i, s }) => { const q = qtyOf(i); return `
+      <div class="ing" style="padding:7px 12px"><span class="amt muted small">${q != null ? esc(fmtQty(q * f, i.unit)) : ""}</span>
+        <span class="small">${esc(i.name)}${i.note && !isFryFat(i) ? ` <span class="note">· ${esc(i.note)}</span>` : isFryFat(i) ? ` <span class="note">· zum Anbraten</span>` : ""}</span>
+        ${s.st === "missing" ? `<span class="pill neutral">nicht im Vorrat</span>` : ""}</div>`; }).join("")}</div>
+    <p class="muted tiny" style="margin:0">Gewürze und Basics kommen nicht automatisch auf die Einkaufsliste. Fehlt etwas, schreib es dort kurz dazu.</p>` : ""}
     ${swapsHtml(r)}
     ${r.steps.length ? `<div class="section-h" style="margin:8px 0 0"><h2>Zubereitung</h2></div><ol class="steps">${r.steps.map(s => `<li><span>${esc(s)}</span></li>`).join("")}</ol>` : ""}
     <div class="row" style="flex-wrap:wrap">
@@ -784,7 +807,7 @@ Bestimme die Ernährungsform und gib Ersatz-Vorschläge. Für jede Fleisch- oder
   $("#sv-plus").onclick = () => { S.servings[id] = Math.min(20, sv + 1); render(); };
   $("#d-cook").onclick = () => {
     let n = 0;
-    r.ingredients.forEach(i => { const s = ingStatus(i, f); if (s.st === "missing" || s.st === "partial") { addToShopping(i.name, s.buy, i.unit, i.aisle, r.title); n++; } });
+    r.ingredients.forEach(i => { if (ingRole(i) === "neben") return; const s = ingStatus(i, f); if (s.st === "missing" || s.st === "partial") { addToShopping(i.name, s.buy, i.unit, i.aisle, r.title); n++; } });
     if (!n) { toast("Du hast alles da. Guten Appetit!"); return; }
     Store.save("shopping"); toast(`${n} ${n === 1 ? "Zutat" : "Zutaten"} auf der Einkaufsliste`); renderTabs(); render();
   };
@@ -1157,8 +1180,8 @@ function planNeeds(entries) {
     const r = e.recipeId && S.recipes[e.recipeId]; if (!r) return;
     const f = (e.servings || r.servings) / r.servings;
     r.ingredients.forEach(i => {
-      if (i.staple) return;
-      const b = base(i.qty != null ? i.qty * f : null, i.unit);
+      if (i.staple || ingRole(i) === "neben") return;
+      const b = base(qtyOf(i) != null ? qtyOf(i) * f : null, i.unit);
       const key = stem(i.name) + "|" + (b ? b.d : "x");
       const cur = need.get(key) || { name: i.name, unit: i.unit, aisle: i.aisle, v: 0, unknown: false, from: new Set(), due: day };
       if (b) cur.v += b.v; else cur.unknown = true;
