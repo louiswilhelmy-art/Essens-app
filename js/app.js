@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -212,14 +212,26 @@ const MEAT = ["speck","hack","hahnchen","huhn","pute","rind","schwein","schinken
 const FISH = ["lachs","thunfisch","garnele","kabeljau","forelle","fisch","sardelle","shrimp","scampi","muschel","tintenfisch","sardine"];
 const ANIMAL = ["milch","sahne","butter","kase","parmesan","pecorino","mozzarella","burrata","feta","halloumi","gouda","emmentaler","cheddar","ricotta","mascarpone","ei","eier","joghurt","quark","schmand","creme fraiche","saure sahne","honig","frischkase"];
 function guessDiet(names) {
-  const f = names.map(n => fold(n));
+  const f = names.map(n => fold(n)).filter(n => !/vegan|vegetar|veggie|pflanzlich|ersatz|soja|tofu|seitan|hafer/.test(n));
   const has = list => f.some(n => list.some(w => n.split(" ").some(x => x === w || x.startsWith(w) || (w.length > 4 && x.endsWith(w)))));
   if (has(MEAT)) return "mit Fleisch";
   if (has(FISH)) return "pescetarisch";
   if (has(ANIMAL)) return "vegetarisch";
   return names.length ? "vegan" : null;
 }
-function dietOf(r) { return r.diet || guessDiet((r.ingredients || []).map(i => i.name)); }
+function baseDiet(r) { return r.diet || guessDiet((r.ingredients || []).map(i => i.name)); }
+function dietOf(r) { return r.swapSel && Object.keys(r.swapSel).length ? guessDiet(ings(r).map(i => i.name)) : baseDiet(r); }
+/* Zutaten mit gewählten Ersatz-Zutaten (z. B. Halloumi statt Speck) */
+function ings(r) {
+  const sel = r.swapSel || {};
+  if (!r.swaps || !Object.keys(sel).length) return r.ingredients || [];
+  return (r.ingredients || []).map(i => {
+    const sw = r.swaps.find(x => sel[x.original] && matchesName(i.name, x.original));
+    if (!sw) return i;
+    const alt = sel[sw.original];
+    return { ...i, name: alt, origName: i.name, aisle: catalogFor(alt)?.aisle || i.aisle, staple: false };
+  });
+}
 function dietPill(d) {
   if (!d) return "";
   const map = { "vegan": ["Vegan", "good"], "vegetarisch": ["Vegetarisch", "good"], "pescetarisch": ["Fisch", "neutral"], "mit Fleisch": ["Fleisch", "neutral"] };
@@ -280,7 +292,7 @@ function ingRole(i) {
 }
 function availability(r) {
   const f = 1; let total = 0, ok = 0;
-  r.ingredients.forEach(i => { if (i.staple || ingRole(i) === "neben") return; total++; const s = ingStatus(i, f).st; if (s === "have" || s === "check") ok++; });
+  ings(r).forEach(i => { if (i.staple || ingRole(i) === "neben") return; total++; const s = ingStatus(i, f).st; if (s === "have" || s === "check") ok++; });
   return { total, ok, frac: total ? ok / total : 1 };
 }
 function addToPantry(name, qty, unit, place, owner) {
@@ -336,7 +348,7 @@ function queryTokens(q) {
   });
   return out;
 }
-function recipeHay(r) { return fold([r.title, r.category, ...(r.tags || []), ...(r.seasons || []), ...r.ingredients.map(i => i.name)].join(" ")); }
+function recipeHay(r) { return fold([r.title, r.category, ...(r.tags || []), ...(r.seasons || []), ...ings(r).map(i => i.name)].join(" ")); }
 function filteredRecipes() {
   let list = Object.entries(S.recipes).map(([id, r]) => ({ id, r, av: availability(r) }));
   const toks = queryTokens(S.recipeQuery);
@@ -726,7 +738,7 @@ function viewRecipe() {
   const r = getR(S.openRecipe);
   const sv = S.servings[S.openRecipe] || r.servings;
   const f = sv / r.servings;
-  const rows = r.ingredients.map((i, idx) => ({ i, idx, s: ingStatus(i, f) }));
+  const rows = ings(r).map((i, idx) => ({ i, idx, s: ingStatus(i, f) }));
   const missing = rows.filter(x => ingRole(x.i) === "haupt" && (x.s.st === "missing" || x.s.st === "partial"));
   const t = r.time || {};
   const pillFor = s => s.st === "have" ? `<span class="pill good">da</span>` : s.st === "check" ? `<span class="pill good">da · Menge prüfen</span>` : s.st === "partial" ? `<span class="pill warn">fehlt ${esc(fmtQty(s.buy, null))}</span>` : s.st === "staple" ? `<span class="pill neutral">Grundzutat</span>` : `<span class="pill bad">fehlt</span>`;
@@ -751,7 +763,7 @@ function viewRecipe() {
     <div class="section-h" style="margin:4px 0 0"><h2>Zutaten</h2><span class="small ${missing.length ? "muted" : ""}">${missing.length ? `${missing.length} fehlen` : `<span class="pill good">alles da</span>`}</span></div>
     <div class="list">${rows.filter(x => ingRole(x.i) === "haupt").map(({ i, s }) => `
       <div class="ing"><span class="amt">${esc(fmtQty(i.qty != null ? i.qty * f : null, i.unit))}</span>
-        <span>${esc(i.name)}${i.note ? `<br><span class="note">${esc(i.note)}</span>` : ""}${s.have && s.st !== "staple" ? `<br><span class="note">im Vorrat: ${s.have.map(p => esc(fmtQty(p.qty, p.unit))).join(" + ")}</span>` : ""}</span>
+        <span>${esc(i.name)}${i.origName ? ` <span class="pill good" style="font-size:11px">statt ${esc(i.origName)}</span>` : ""}${i.note ? `<br><span class="note">${esc(i.note)}</span>` : ""}${s.have && s.st !== "staple" ? `<br><span class="note">im Vorrat: ${s.have.map(p => esc(fmtQty(p.qty, p.unit))).join(" + ")}</span>` : ""}</span>
         ${pillFor(s)}${s.others && s.others.length ? `<span class="note" style="grid-column:2/4">Hat noch: ${s.others.map(o => esc(who(o.owner)) + " (" + esc(fmtQty(o.qty, o.unit)) + ")").join(", ")}</span>` : ""}</div>`).join("")}</div>
     ${rows.some(x => ingRole(x.i) === "neben") ? `<div class="section-h" style="margin:6px 0 0"><h2 style="font-size:16px">Gewürze &amp; Basics</h2></div>
     <div class="list">${rows.filter(x => ingRole(x.i) === "neben").map(({ i, s }) => { const q = qtyOf(i); return `
@@ -771,12 +783,14 @@ function viewRecipe() {
   </div>`;
 }
 function swapsHtml(r) {
-  const d = dietOf(r);
+  const d = baseDiet(r);
   if (d === "vegan") return "";
   const head = d === "vegetarisch" ? "Vegan machen" : "Vegetarisch machen";
-  if (r.swaps && r.swaps.length) return `<div class="section-h" style="margin:8px 0 0"><h2>${head}</h2></div>
-    <div class="list">${r.swaps.map(x => `<div class="item" style="flex-direction:column;align-items:stretch;gap:4px"><span><b>${esc(x.original)}</b> <span class="muted">ersetzen durch</span></span>
-      <div class="row" style="flex-wrap:wrap;gap:6px">${x.alternatives.map(a => `<span class="pill good">${esc(a)}</span>`).join("")}</div>
+  const sel = r.swapSel || {}, any = Object.keys(sel).length > 0;
+  if (r.swaps && r.swaps.length) return `<div class="section-h" style="margin:8px 0 0"><h2>${head}</h2>${any ? `<button class="linkbtn" id="sw-reset">Original</button>` : ""}</div>
+    ${!r.swaps.every(x => sel[x.original]) ? `<button class="btn block" id="sw-all">${d === "vegetarisch" ? "Komplett vegan machen" : "Komplett vegetarisch machen"}</button>` : ""}
+    <div class="list">${r.swaps.map((x, xi) => `<div class="item" style="flex-direction:column;align-items:stretch;gap:6px"><span><b>${esc(x.original)}</b> <span class="muted">ersetzen durch</span></span>
+      <div class="row" style="flex-wrap:wrap;gap:6px">${x.alternatives.map((a, ai) => `<button class="chip" data-swap="${xi}|${ai}" aria-pressed="${sel[x.original] === a}">${esc(a)}</button>`).join("")}</div>
       ${x.tip ? `<span class="muted small">${esc(x.tip)}</span>` : ""}</div>`).join("")}</div>`;
   if (r.swaps && !r.swaps.length && r.diet) return "";
   return `<div class="section-h" style="margin:8px 0 0"><h2>${head}</h2></div><button class="btn block" id="d-swaps">Alternativen vorschlagen lassen</button>`;
@@ -787,6 +801,14 @@ function mountRecipe() {
   $("#d-back").onclick = () => { S.openRecipe = null; render(); };
   const kp = $("#d-keep"); if (kp) kp.onclick = () => { S.recipes[id] = r; delete S.drafts[id]; Store.save(id); render(); toast("In deinen Rezepten gespeichert"); };
   $("#d-plan").onclick = () => { if (S.drafts[id]) { S.recipes[id] = r; delete S.drafts[id]; Store.save(id); } planPickDaySheet(id); };
+  document.querySelectorAll("[data-swap]").forEach(b => b.onclick = () => {
+    const [xi, ai] = b.dataset.swap.split("|").map(Number); const x = r.swaps[xi]; const a = x.alternatives[ai];
+    r.swapSel = { ...(r.swapSel || {}) };
+    if (r.swapSel[x.original] === a) delete r.swapSel[x.original]; else r.swapSel[x.original] = a;
+    Store.save(id); render(); toast(r.swapSel[x.original] ? `${a} statt ${x.original}` : `Wieder ${x.original}`);
+  });
+  const swAll = $("#sw-all"); if (swAll) swAll.onclick = () => { r.swapSel = {}; r.swaps.forEach(x => { if (x.alternatives[0]) r.swapSel[x.original] = x.alternatives[0]; }); Store.save(id); render(); toast("Zutaten getauscht"); };
+  const swRes = $("#sw-reset"); if (swRes) swRes.onclick = () => { r.swapSel = {}; Store.save(id); render(); toast("Wieder das Original"); };
   const sw = $("#d-swaps");
   if (sw) sw.onclick = async () => {
     sw.disabled = true; sw.innerHTML = `<span class="spinner"></span> Die KI sucht Alternativen …`;
@@ -807,12 +829,12 @@ Bestimme die Ernährungsform und gib Ersatz-Vorschläge. Für jede Fleisch- oder
   $("#sv-plus").onclick = () => { S.servings[id] = Math.min(20, sv + 1); render(); };
   $("#d-cook").onclick = () => {
     let n = 0;
-    r.ingredients.forEach(i => { if (ingRole(i) === "neben") return; const s = ingStatus(i, f); if (s.st === "missing" || s.st === "partial") { addToShopping(i.name, s.buy, i.unit, i.aisle, r.title); n++; } });
+    ings(r).forEach(i => { if (ingRole(i) === "neben") return; const s = ingStatus(i, f); if (s.st === "missing" || s.st === "partial") { addToShopping(i.name, s.buy, i.unit, i.aisle, r.title); n++; } });
     if (!n) { toast("Du hast alles da. Guten Appetit!"); return; }
     Store.save("shopping"); toast(`${n} ${n === 1 ? "Zutat" : "Zutaten"} auf der Einkaufsliste`); renderTabs(); render();
   };
   $("#d-cooked").onclick = () => confirmSheet("Gekocht?", `Die Zutaten für ${sv} ${sv === 1 ? "Portion" : "Portionen"} werden von deinem Vorrat abgezogen.`, "Abziehen", () => {
-    r.ingredients.forEach(i => {
+    ings(r).forEach(i => {
       if (i.staple || i.qty == null) return;
       let rest = base(i.qty * f, i.unit);
       pantryMatches(i.name).forEach(p => {
@@ -1179,7 +1201,7 @@ function planNeeds(entries) {
   entries.forEach(({ e, day }) => {
     const r = e.recipeId && S.recipes[e.recipeId]; if (!r) return;
     const f = (e.servings || r.servings) / r.servings;
-    r.ingredients.forEach(i => {
+    ings(r).forEach(i => {
       if (i.staple || ingRole(i) === "neben") return;
       const b = base(qtyOf(i) != null ? qtyOf(i) * f : null, i.unit);
       const key = stem(i.name) + "|" + (b ? b.d : "x");
