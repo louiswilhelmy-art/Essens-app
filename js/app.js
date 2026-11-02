@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -61,6 +61,7 @@ const S = {
   pantry: [], shopping: [], recipes: {}, ideas: {},
   today: { steps: [], options: [], directions: [], shown: [], loading: false, error: "" },
   plan: { days: {} }, requests: [], pantryFilter: "alle", household: null, people: null, me: null, names: {}, planWeek: 0, planSpan: 1,
+  push: null,
   ai: { provider: "gemini", keys: {}, models: {}, prices: {}, budget: 0 }, usage: { days: {} }, settingsOpen: false,
   queue: { items: [], running: false, stop: false }, queueSheet: null,
   drafts: {}, todayMode: "lust", howto: { q: "", options: [], loading: false, error: "" },
@@ -1650,6 +1651,8 @@ function viewSettings() {
       <button class="btn" id="st-save2">Limit und Preise speichern</button>
     </div>
 
+    ${pushSettingsHtml()}
+
     <div class="section-h" style="margin:8px 0 0"><h2>Deine Daten</h2></div>
     <div class="profile">
       <span class="small">Alles liegt nur auf diesem Gerät. Mach ab und zu eine Sicherung, z. B. bevor du das Handy wechselst.</span>
@@ -1680,6 +1683,7 @@ function capsTable(sel) {
 function readNum(v) { const n = parseFloat(String(v || "").replace(",", ".")); return isNaN(n) ? 0 : n; }
 function mountSettings() {
   const p = AI.provider();
+  mountPushSettings();
   $("#st-back").onclick = () => { S.settingsOpen = false; render(); };
   document.querySelectorAll("[data-prov]").forEach(b => b.onclick = () => { S.ai.provider = b.dataset.prov; Store.save("ai"); AI.init(); render(); });
   const sel = $("#st-model"), own = $("#st-model-own");
@@ -1740,7 +1744,8 @@ function mountSettings() {
 
 /* ---------- Start ---------- */
 function startApp() {
+  if (location.hash === "#einkauf") S.tab = "einkauf";
   render();
-  Store.init().then(() => { AI.init(); render(); });
+  Store.init().then(() => { AI.init(); render(); Push.changed(); });
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 }

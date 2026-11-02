@@ -54,6 +54,7 @@ const Store = {
       S.household = st.household || null; S.people = st.people || null;
       S.ai = Object.assign({ provider: "gemini", keys: {}, models: {}, prices: {}, budget: 0 }, all.ai || {});
       S.usage = all.usage || { days: {} };
+      S.push = Object.assign({ server: "", on: false, morning: "09:00", evening: "18:00", device: "" }, all.push || {});
       S.recipes = {};
       Object.keys(all).forEach(k => { if (k.startsWith("r_")) S.recipes[k] = all[k]; });
       S.storeMode = "local"; S.storeNote = "";
@@ -72,6 +73,7 @@ const Store = {
     if (key === "settings") return { household: S.household || null, people: S.people || null };
     if (key === "ai") return S.ai;
     if (key === "usage") return S.usage;
+    if (key === "push") return S.push;
     return S.recipes[key] ? S.recipes[key] : DEL;
   },
   save(key) {
@@ -79,12 +81,14 @@ const Store = {
     if (!IDB.db) return;
     const d = this.dataFor(key);
     const p = d === DEL ? IDB.del(key) : IDB.put(key, JSON.parse(JSON.stringify(d)));
+    if (typeof Push !== "undefined" && (key === "pantry" || key === "shopping" || key === "plan" || key.startsWith("r_"))) Push.changed();
     p.catch(e => toast(e && e.name === "QuotaExceededError" ? "Speicher voll: lösche ein paar Fotos oder alte Rezepte." : "Speichern hat nicht geklappt."));
   },
   /* Sicherung als JSON (alle Daten) */
   async exportAll() {
     const all = await IDB.all();
     delete all.ai; /* API-Schlüssel nie mit exportieren */
+    delete all.push; delete all.reminders;
     return { app: "essensapp", version: 1, exportedAt: new Date().toISOString(), data: all };
   },
   async importAll(json, replace) {

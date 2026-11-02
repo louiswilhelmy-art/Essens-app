@@ -38,6 +38,10 @@ Der Schlüssel bleibt nur auf dem eigenen Gerät.
 
 **Verbrauch und Wochenlimit:** In den Einstellungen lässt sich ein Wochenlimit in € setzen. Dann zeigt ein schmaler Balken oben, wie viel davon schon verbraucht ist. Die Beträge sind Schätzungen aus den Token-Zahlen, die die KI bei jeder Antwort mitschickt.
 
+## Push-Erinnerungen
+
+Am Vorabend und am Tag selbst kommt eine Nachricht, was für das geplante Abendessen noch fehlt. Einmalig einen kostenlosen Push-Server bei Cloudflare einrichten: [push-server/ANLEITUNG.md](push-server/ANLEITUNG.md).
+
 ## Daten
 
 Alles liegt lokal im Browser (IndexedDB). Unter Einstellungen → **Sicherung herunterladen / einspielen** lassen sich die Daten sichern oder auf ein anderes Gerät bringen. API-Schlüssel werden nie mit gesichert.
@@ -50,6 +54,8 @@ css/app.css           Design (Sand/Koralle/Petrol, hell + dunkel)
 js/app.js             Oberfläche und Logik (Plan, Ideen, Rezepte, Vorrat, Einkauf, Einstellungen)
 js/store.js           Speicher (IndexedDB), Sicherung
 js/ai.js              KI-Anbindung (Gemini, Claude, ChatGPT), Verbrauch und Budget
+js/push.js            Push-Erinnerungen (berechnet Zeitpunkte und Texte)
+push-server/          Cloudflare Worker für die Push-Nachrichten + Anleitung
 sw.js                 Offline-Cache (bei Änderungen VERSION hochzählen)
 manifest.webmanifest  App-Name und Symbole für die Installation
 ```
@@ -59,5 +65,4 @@ Kein Build-Schritt: Dateien ändern, hochladen, fertig.
 ## Nächste Schritte (geplant)
 
 - Synchronisierung zwischen Geräten und gemeinsamer Haushalt (Partner:in / WG) mit eigenen Fächern
-- Push-Benachrichtigungen („heute Abend fehlt noch …“)
 - Titelbilder von Rezept-Webseiten automatisch laden
