@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -1625,7 +1625,7 @@ function viewSettings() {
       ${p === "gemini" ? `<label class="row small"><input type="checkbox" id="st-gpaid" ${S.ai.geminiPaid ? "checked" : ""}> Ich nutze Gemini kostenpflichtig (sonst zählt es als 0 €)</label>` : ""}
       <div class="row"><button class="btn primary grow" id="st-save">Speichern</button><button class="btn" id="st-test">Testen</button></div>
       <span class="small muted" id="st-status" role="status">${AI.ready() ? "Verbunden: " + esc(P.name) : "Noch nicht verbunden"}</span>
-      <span class="tiny muted">Der Schlüssel bleibt nur auf diesem Gerät und wird direkt an ${esc(P.name)} geschickt.${p === "gemini" ? " Gemini kann YouTube-Videos und Webseiten selbst lesen." : " YouTube-Videos kann nur Gemini selbst ansehen; hier helfen Screenshots."}</span>
+      <span class="tiny muted">Der Schlüssel bleibt nur auf diesem Gerät und wird direkt an ${esc(P.name)} geschickt.${p === "gemini" ? " Gemini kann YouTube-Videos und Webseiten selbst lesen." : p === "claude" ? " Claude liest Rezept-Webseiten selbst. YouTube-Videos kann nur Gemini ansehen; hier helfen Screenshots oder die Videobeschreibung." : " YouTube-Videos kann nur Gemini selbst ansehen; hier helfen Screenshots."}</span>
     </div>
 
     <div class="section-h" style="margin:8px 0 0"><h2>Verbrauch</h2></div>

@@ -50,7 +50,7 @@ const AI = {
   },
   ready() { return !!this.key() && !!this.model(); },
   canWatch(url) { return this.provider() === "gemini" && !!ytId(url); },
-  canRead(url) { return this.provider() === "gemini" && /^https?:\/\//i.test(url || "") && !isVideoUrl(url); },
+  canRead(url) { return (this.provider() === "gemini" || this.provider() === "claude") && /^https?:\/\//i.test(url || "") && !isVideoUrl(url); },
 
   /* ---------- Verbrauch ---------- */
   price(model) {
@@ -116,15 +116,28 @@ const AI = {
       inTok = (u.promptTokenCount || 0) + (u.toolUsePromptTokenCount || 0);
       outTok = (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
     } else if (p === "claude") {
-      const content = imgs.map(i => ({ type: "image", source: { type: "base64", media_type: i.type, data: i.data } }));
-      content.push({ type: "text", text: prompt + "\n\nAntworte ausschließlich mit gültigem JSON, ohne Text davor oder danach." });
-      const r = await apiFetch("https://api.anthropic.com/v1/messages", {
+      const link = opts.link || "";
+      const build = withLink => {
+        const content = imgs.map(i => ({ type: "image", source: { type: "base64", media_type: i.type, data: i.data } }));
+        content.push({ type: "text", text: prompt + (withLink && this.canRead(link) ? "\n\nLies die Webseite unter dem Link mit dem web_fetch-Werkzeug." : link ? "\n\n(Der Link konnte nicht geöffnet werden. Erfinde nichts; wenn das Gericht nicht erkennbar ist, antworte {\"error\": \"unbekannt\"}.)" : "") + "\n\nAntworte am Ende ausschließlich mit gültigem JSON, ohne Text davor oder danach." });
+        const body = { model, max_tokens: 4096, messages: [{ role: "user", content }] };
+        if (withLink && this.canRead(link)) body.tools = [{ type: "web_fetch_20250910", name: "web_fetch", max_uses: 3 }];
+        return body;
+      };
+      const call = (body) => apiFetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: "user", content }] }),
+        headers: Object.assign({ "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body.tools ? { "anthropic-beta": "web-fetch-2025-09-10" } : {}),
+        body: JSON.stringify(body),
       });
-      text = (r.content || []).map(x => x.text || "").join("");
-      inTok = r.usage?.input_tokens || 0; outTok = r.usage?.output_tokens || 0;
+      const usesLink = this.canRead(link);
+      let r;
+      try { r = await call(build(true)); }
+      catch (e) { if (usesLink && e && (e.code === "server" || e.code === "bad_request")) r = await call(build(false)); else throw e; }
+      /* Nur die Text-Blöcke nach dem letzten Werkzeug-Ergebnis sind die Antwort */
+      const blocks = r.content || [];
+      let lastTool = -1; blocks.forEach((b, i) => { if (b.type && b.type !== "text") lastTool = i; });
+      text = blocks.slice(lastTool + 1).filter(b => b.type === "text").map(b => b.text).join("") || blocks.filter(b => b.type === "text").map(b => b.text).join("");
+      inTok = (r.usage?.input_tokens || 0) + (r.usage?.cache_read_input_tokens || 0); outTok = r.usage?.output_tokens || 0;
     } else {
       const content = [{ type: "text", text: prompt + "\n\nAntworte ausschließlich mit gültigem JSON." }];
       imgs.forEach(i => content.push({ type: "image_url", image_url: { url: `data:${i.type};base64,${i.data}` } }));
