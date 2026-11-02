@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -760,6 +760,9 @@ function importSheet() {
       const h = sh.querySelector("#i-phint"); if (!h) return;
       if (mode !== "link") { h.textContent = ""; return; }
       const yt = ytThumb(sh.querySelector("#i-url").value.trim());
+      const url0 = sh.querySelector("#i-url").value.trim();
+      if (isVideoUrl(url0) && !AI.canWatch(extractUrls(url0)[0] || url0)) { h.innerHTML = `Videos kann nur Gemini selbst ansehen. Mit ${esc(PROVIDERS[AI.provider()].name)} bitte einen Screenshot vom Video oder die Videobeschreibung dazugeben.`; return; }
+      if (yt) { h.innerHTML = "Bild optional: Das Titelbild holt die App selbst."; return; }
       h.innerHTML = yt
         ? `Screenshot vom Video oder das Titelbild: <a href="${esc(yt)}" target="_blank" rel="noopener">Titelbild öffnen</a>, gedrückt halten, „Bild sichern“ und hier hinzufügen. Oder ein kopiertes Bild einfügen.`
         : "Screenshot von der Rezeptseite oder dem Video. Am Computer kannst du ein kopiertes Bild auch einfach einfügen (Strg+V).";
@@ -1620,6 +1623,7 @@ function viewSettings() {
     <div><button class="linkbtn row" id="st-back">${ICON.back} Zurück</button></div>
     <div class="section-h" style="margin:4px 0 0"><h2>KI-Anbieter</h2></div>
     <div class="seg">${Object.entries(PROVIDERS).map(([k, v]) => `<button type="button" data-prov="${k}" aria-pressed="${k === p}">${k === "gemini" ? "Gemini" : k === "claude" ? "Claude" : "ChatGPT"}</button>`).join("")}</div>
+    ${capsTable(p)}
     <div class="profile">
       <span class="small">${esc(P.keyHint)} <a href="${P.keyUrl}" target="_blank" rel="noopener">Schlüssel holen</a></span>
       <div class="field"><label for="st-key">API-Schlüssel ${esc(P.name)}</label><input id="st-key" type="password" autocomplete="off" value="${esc(AI.key(p))}" placeholder="Schlüssel hier einfügen"></div>
@@ -1629,7 +1633,7 @@ function viewSettings() {
       ${p === "gemini" ? `<label class="row small"><input type="checkbox" id="st-gpaid" ${S.ai.geminiPaid ? "checked" : ""}> Ich nutze Gemini kostenpflichtig (sonst zählt es als 0 €)</label>` : ""}
       <div class="row"><button class="btn primary grow" id="st-save">Speichern</button><button class="btn" id="st-test">Testen</button></div>
       <span class="small muted" id="st-status" role="status">${AI.ready() ? "Verbunden: " + esc(P.name) : "Noch nicht verbunden"}</span>
-      <span class="tiny muted">Der Schlüssel bleibt nur auf diesem Gerät und wird direkt an ${esc(P.name)} geschickt.${p === "gemini" ? " Gemini kann YouTube-Videos und Webseiten selbst lesen." : p === "claude" ? " Claude liest Rezept-Webseiten selbst. YouTube-Videos kann nur Gemini ansehen; hier helfen Screenshots oder die Videobeschreibung." : " YouTube-Videos kann nur Gemini selbst ansehen; hier helfen Screenshots."}</span>
+      <span class="tiny muted">Der Schlüssel bleibt nur auf diesem Gerät und wird direkt an ${esc(P.name)} geschickt.</span>
     </div>
 
     <div class="section-h" style="margin:8px 0 0"><h2>Verbrauch</h2></div>
@@ -1653,6 +1657,24 @@ function viewSettings() {
       <button class="btn" id="st-kp">Aus dem Küchenplan (Claude) übernehmen</button>
     </div>
     <p class="muted tiny" style="margin:0">Essens-App · Version ${APP_VERSION}</p>
+  </div>`;
+}
+/* Was welcher Anbieter kann */
+const CAPS = [
+  ["YouTube-Videos ansehen", { gemini: 1, claude: 0, openai: 0 }],
+  ["Rezept-Webseiten lesen", { gemini: 1, claude: 1, openai: 0 }],
+  ["Fotos: Einkauf, Screenshots, Gerichte", { gemini: 1, claude: 1, openai: 1 }],
+  ["Erzählen, Ideen, Anpassen, Vorschläge", { gemini: 1, claude: 1, openai: 1 }],
+];
+function capsTable(sel) {
+  const cols = [["gemini", "Gemini"], ["claude", "Claude"], ["openai", "ChatGPT"]];
+  const mark = v => v ? `<span style="color:var(--accent2);font-weight:700">✓</span>` : `<span class="muted">–</span>`;
+  return `<div class="profile" style="gap:4px;padding:10px 12px">
+    <div style="display:grid;grid-template-columns:1fr repeat(3,56px);gap:6px 4px;align-items:center;font-size:13px">
+      <span></span>${cols.map(([k, l]) => `<b style="text-align:center;font-size:12px;${k === sel ? "color:var(--accent2)" : ""}">${l}</b>`).join("")}
+      ${CAPS.map(([l, v]) => `<span>${l}</span>${cols.map(([k]) => `<span style="text-align:center">${mark(v[k])}</span>`).join("")}`).join("")}
+    </div>
+    <span class="tiny muted">Nur Gemini kann Videos ansehen. Bei Claude und ChatGPT brauchen YouTube-, Instagram- und TikTok-Links einen Screenshot oder die Videobeschreibung.</span>
   </div>`;
 }
 function readNum(v) { const n = parseFloat(String(v || "").replace(",", ".")); return isNaN(n) ? 0 : n; }

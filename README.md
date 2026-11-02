@@ -27,7 +27,14 @@ In der App oben rechts auf das **Zahnrad**:
 | Claude | https://console.anthropic.com/settings/keys | pro Nutzung, getrennt vom Claude-Abo |
 | ChatGPT | https://platform.openai.com/api-keys | pro Nutzung, getrennt von ChatGPT Plus |
 
-Der Schlüssel bleibt nur auf dem eigenen Gerät. Nur Gemini kann YouTube-Videos und Webseiten selbst lesen; bei Claude und ChatGPT helfen Screenshots oder eingefügter Text.
+Der Schlüssel bleibt nur auf dem eigenen Gerät.
+
+| Kann … | Gemini | Claude | ChatGPT |
+|---|---|---|---|
+| YouTube-Videos ansehen | ✓ | – | – |
+| Rezept-Webseiten lesen | ✓ | ✓ | – |
+| Fotos (Einkauf, Screenshots, Gerichte) | ✓ | ✓ | ✓ |
+| Erzählen, Ideen, Anpassen, Vorschläge | ✓ | ✓ | ✓ |
 
 **Verbrauch und Wochenlimit:** In den Einstellungen lässt sich ein Wochenlimit in € setzen. Dann zeigt ein schmaler Balken oben, wie viel davon schon verbraucht ist. Die Beträge sind Schätzungen aus den Token-Zahlen, die die KI bei jeder Antwort mitschickt.
 
