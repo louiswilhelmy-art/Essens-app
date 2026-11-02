@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -180,6 +180,7 @@ function ytId(url) {
   return m ? m[1] : null;
 }
 function isVideoUrl(url) { return /(youtube\.com|youtu\.be|instagram\.com|tiktok\.com|facebook\.com\/reel|fb\.watch)/i.test(String(url || "")); }
+function srcHost(url) { try { const h = new URL(url).hostname.replace(/^www\.|^m\./, ""); return h === "youtu.be" ? "youtube.com" : h; } catch (e) { return ""; } }
 function ytThumb(url) { const id = ytId(url); return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : null; }
 function loadImage(file) {
   return new Promise((res, rej) => { const url = URL.createObjectURL(file); const img = new Image(); img.onload = () => { res(img); }; img.onerror = rej; img.src = url; });
@@ -369,6 +370,8 @@ const ICON = {
   cal: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
   people: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14c2.4.2 4 1.7 4.5 4.5"/></svg>',
   spark: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c1 3.5 4.5 5 4.5 9.5a4.5 4.5 0 0 1-9 0c0-2 1-3.2 2-4 .3 1.6 1 2.5 2 2.5 0-3 .5-5.5.5-8z"/><path d="M12 20.5c-1.4 0-2.3-1-2.3-2.3 0-1.5 1.3-2.2 2.3-3.7 1 1.5 2.3 2.2 2.3 3.7 0 1.3-.9 2.3-2.3 2.3z"/></svg>',
+  play: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+  link: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>',
   mic: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>',
   camera: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   heart: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z"/></svg>',
@@ -843,11 +846,12 @@ function viewRecipe() {
   <div class="detail stack" style="padding-top:12px">
     <div><button class="linkbtn row" id="d-back">${ICON.back} Zurück</button></div>
     ${S.drafts[S.openRecipe] ? `<div class="banner row" style="justify-content:space-between;flex-wrap:wrap"><span>Vorschau, noch nicht gespeichert.</span><button class="btn primary" id="d-keep">In meine Rezepte</button></div>` : ""}
-    ${photoTag(r, "hero")}
+    ${r.url && ytId(r.url) && (r.photo || r.photoUrl) ? `<a class="herolink" href="${esc(r.url)}" target="_blank" rel="noopener" aria-label="Video auf YouTube ansehen">${photoTag(r, "hero")}<span class="playbadge">${ICON.play}</span></a>` : photoTag(r, "hero")}
     <div class="row" style="flex-wrap:wrap"><button class="linkbtn" id="d-photo">${r.photo || r.photoUrl ? "Foto ändern" : "+ Foto hinzufügen"}</button>${r.photo || r.photoUrl ? `<button class="linkbtn" id="d-photo-del" style="color:var(--muted)">Foto entfernen</button>` : ""}${!r.photo && !r.photoUrl && ytThumb(r.url) ? `<a class="small" href="${esc(ytThumb(r.url))}" target="_blank" rel="noopener">YouTube-Titelbild öffnen</a>` : ""}</div>
     ${!r.photo && !r.photoUrl && ytThumb(r.url) ? `<p class="muted tiny" style="margin:0">Titelbild öffnen, gedrückt halten, „Bild sichern“, dann über „+ Foto hinzufügen“ einsetzen.</p>` : ""}
     <h2>${esc(r.title)}</h2>
-    <div class="row small" style="flex-wrap:wrap;gap:6px">${dietPill(dietOf(r))}<span class="pill neutral">${esc(r.category)}</span>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" class="small">Original öffnen</a>` : ""}</div>
+    <div class="row small" style="flex-wrap:wrap;gap:6px">${dietPill(dietOf(r))}<span class="pill neutral">${esc(r.category)}</span></div>
+    ${r.url ? `<a class="btn srcbtn" href="${esc(r.url)}" target="_blank" rel="noopener">${ytId(r.url) || /youtu|instagram|tiktok/i.test(r.url) ? ICON.play + " Video ansehen" : ICON.link + " Original-Rezept öffnen"}<span class="muted tiny" style="font-weight:500;margin-left:auto">${esc(srcHost(r.url))}</span></a>` : ""}
     ${r.confidence === "niedrig" ? `<div class="banner">${esc(r.sourceNote || "Aus dem Link geschätzt.")} Füge über „Mit KI anpassen“ den Originaltext ein, dann wird es genau.</div>` : ""}
     <div class="times">
       <div class="time"><span class="muted tiny">Vorbereitung</span><b>${t.prep != null ? Math.round(t.prep) : "–"}</b><span class="muted tiny">Min</span></div>
