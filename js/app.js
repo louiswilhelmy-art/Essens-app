@@ -1,6 +1,6 @@
 
 "use strict";
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 /* ---------- Grunddaten ---------- */
 const UNITS = ["Stk","g","kg","ml","l","EL","TL","Prise","Bund","Dose","Packung","Zehe","Scheibe","Becher","Glas"];
 const AISLES = { o:"Obst & Gemüse", k:"Kühlregal", f:"Fleisch & Fisch", t:"Trockenware & Konserven", g:"Gewürze, Öle & Saucen", b:"Brot & Backwaren", z:"Tiefkühl", d:"Getränke", s:"Sonstiges" };
@@ -399,9 +399,9 @@ function closeSheet() { $("#overlay").innerHTML = ""; S.queueSheet = null; }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function extractUrls(t) { return [...new Set((String(t || "").match(/https?:\/\/[^\s<>"'„“]+/g) || []).map(u => u.replace(/[),.;!?]+$/, "")))]; }
 function linkReadable(url) { return typeof AI !== "undefined" && (AI.canWatch(url) || AI.canRead(url)); }
-const QSTATE = { wartet: ["Wartet", "neutral"], läuft: ["Läuft …", "warn"], fertig: ["Fertig", "good"], hinweis: ["Braucht Hinweis", "warn"], fehler: ["Fehler", "bad"], doppelt: ["Schon da", "neutral"] };
+const QSTATE = { wartet: ["Wartet", "neutral"], läuft: ["Läuft …", "warn"], fertig: ["Fertig", "good"], hinweis: ["Braucht Hinweis", "warn"], fehler: ["Fehler", "bad"], doppelt: ["Schon da", "neutral"], ähnlich: ["Ähnlich", "warn"], verworfen: ["Verworfen", "neutral"] };
 function queueAdd(urls, note) {
-  urls.forEach(u => { if (!S.queue.items.some(x => x.url === u && x.status !== "fertig")) S.queue.items.push({ id: uid(), url: u, status: "wartet", note: note || "", msg: "" }); });
+  urls.forEach(u => { if (!S.queue.items.some(x => sameLink(x.url, u) && !["fertig", "verworfen"].includes(x.status))) S.queue.items.push({ id: uid(), url: u, status: "wartet", note: note || "", msg: "" }); });
   queueRun();
 }
 function queueCounts() { const c = {}; S.queue.items.forEach(x => c[x.status] = (c[x.status] || 0) + 1); return c; }
@@ -409,17 +409,25 @@ function queueCardHtml() {
   const Q = S.queue; if (!Q.items.length) return `<div id="q-card"></div>`;
   const c = queueCounts(), total = Q.items.length, done = total - (c.wartet || 0) - (c["läuft"] || 0);
   const running = c.wartet || c["läuft"];
+  const paused = running && !Q.running && Q.pausedUntil > Date.now();
+  const when = paused ? new Date(Q.pausedUntil).toLocaleString("de-AT", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
   return `<div id="q-card" class="profile" style="margin-bottom:12px">
-    <div class="row" style="justify-content:space-between"><b>${running ? "Import läuft" : "Import fertig"}</b><span class="num small">${done} von ${total}</span></div>
-    <div class="bar" aria-hidden="true"><i style="width:${Math.round(done / total * 100)}%"></i></div>
-    <span class="small muted">${c.fertig || 0} fertig${c.hinweis ? ` · ${c.hinweis} brauchen einen Hinweis` : ""}${c.fehler ? ` · ${c.fehler} Fehler` : ""}${c.doppelt ? ` · ${c.doppelt} schon da` : ""}${running ? " · App bitte offen lassen" : ""}</span>
-    <button class="btn" data-queue-open>Liste ansehen</button></div>`;
+    <div class="row" style="justify-content:space-between"><b>${paused ? "Import pausiert" : running ? "Import läuft" : "Import fertig"}</b><span class="num small">${done} von ${total}</span></div>
+    <div class="bar" aria-hidden="true"><i style="width:${Math.round(done / total * 100)}%;${paused ? "background:var(--warm)" : ""}"></i></div>
+    ${paused ? `<span class="small">${esc(Q.pauseReason || "Limit erreicht")}. Geht ab ca. ${esc(when)} automatisch weiter, sobald die App offen ist.</span>` : ""}
+    <span class="small muted">${c.fertig || 0} fertig${c["ähnlich"] ? ` · ${c["ähnlich"]} ähnlich, bitte entscheiden` : ""}${c.hinweis ? ` · ${c.hinweis} brauchen einen Hinweis` : ""}${c.fehler ? ` · ${c.fehler} Fehler` : ""}${c.doppelt ? ` · ${c.doppelt} schon da` : ""}${running && !paused ? " · App bitte offen lassen" : ""}</span>
+    <div class="row">${paused ? `<button class="btn grow" data-queue-now>Jetzt versuchen</button>` : ""}<button class="btn grow" data-queue-open>Liste ansehen</button></div></div>`;
 }
 function queueRefresh() {
+  if (Store.dataFor && IDB.db) Store.save("queue");
   if (S.queueSheet && document.contains(S.queueSheet)) drawQueue(S.queueSheet);
   const el = $("#q-card"); if (el) el.outerHTML = queueCardHtml();
 }
-document.addEventListener("click", e => { if (e.target.closest("[data-queue-open]")) queueSheet(); });
+document.addEventListener("click", e => {
+  if (e.target.closest("[data-queue-open]")) queueSheet();
+  if (e.target.closest("[data-queue-now]")) { S.queue.pausedUntil = 0; S.queue.items.forEach(x => x.retried = false); queueRun(); }
+});
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.queue.items.some(x => x.status === "wartet")) queueRun(); });
 function queueSheet() { openSheet("", sh => { S.queueSheet = sh; drawQueue(sh); }); }
 function drawQueue(sh) {
   const Q = S.queue, c = queueCounts();
@@ -432,31 +440,109 @@ function drawQueue(sh) {
           <span class="pill ${cls}">${l}</span></div>
         ${it.msg && it.status !== "fertig" ? `<span class="small muted">${esc(it.msg)}</span>` : ""}
         ${it.status === "fertig" ? `<button class="linkbtn small" data-qopen="${it.recipeId}" style="align-self:flex-start">Rezept öffnen</button>` : ""}
+        ${it.status === "ähnlich" ? `<button class="btn primary" data-qcmp="${it.id}">Vergleichen und entscheiden</button>` : ""}
+        ${it.status === "doppelt" ? `<div class="row"><button class="btn grow" data-qopen="${it.recipeId || ""}">Gespeichertes öffnen</button><button class="btn grow" data-qforce="${it.id}">Trotzdem neu einlesen</button></div>` : ""}
         ${it.status === "hinweis" || it.status === "fehler" ? `<div class="row"><input class="grow" data-qnote="${it.id}" value="${esc(keep[it.id] ?? it.note ?? "")}" placeholder="Was wird gekocht? z. B. Gnocchi mit Feta" style="border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:9px 10px"><button class="btn" data-qretry="${it.id}">Nochmal</button></div>` : ""}
       </div>`; }).join("")}</div>
     <div class="row" style="flex-wrap:wrap">${c.wartet || c["läuft"] ? `<button class="btn grow" id="q-stop">Anhalten</button>` : Q.items.some(x => x.status === "wartet") ? "" : ""}
       ${!Q.running && c.wartet ? `<button class="btn primary grow" id="q-go">Weiter</button>` : ""}
       <button class="btn grow" id="q-clean">Erledigte entfernen</button><button class="btn grow" id="q-close">Schließen</button></div>`;
-  sh.querySelectorAll("[data-qopen]").forEach(b => b.onclick = () => { closeSheet(); S.openRecipe = b.dataset.qopen; render(); window.scrollTo(0, 0); });
+  sh.querySelectorAll("[data-qopen]").forEach(b => b.onclick = () => { if (!b.dataset.qopen || !S.recipes[b.dataset.qopen]) return; closeSheet(); S.openRecipe = b.dataset.qopen; render(); window.scrollTo(0, 0); });
   sh.querySelectorAll("[data-qretry]").forEach(b => b.onclick = () => { const it = Q.items.find(x => x.id === b.dataset.qretry); const inp = sh.querySelector(`[data-qnote="${it.id}"]`); it.note = inp ? inp.value.trim() : it.note; it.status = "wartet"; it.msg = ""; it.retried = false; queueRun(); queueRefresh(); });
+  sh.querySelectorAll("[data-qcmp]").forEach(b => b.onclick = () => { const it = Q.items.find(x => x.id === b.dataset.qcmp); if (it) compareSheet(it.pending, it.similar, res => { it.status = res.kind === "discard" ? "verworfen" : "fertig"; it.recipeId = res.id; it.title = it.pending.title; it.msg = res.kind === "variant" ? "Als Variante gespeichert." : ""; delete it.pending; queueRefresh(); }); });
+  sh.querySelectorAll("[data-qforce]").forEach(b => b.onclick = () => { const it = Q.items.find(x => x.id === b.dataset.qforce); it.force = true; it.status = "wartet"; it.msg = ""; queueRun(); queueRefresh(); });
   const st = sh.querySelector("#q-stop"); if (st) st.onclick = () => { Q.stop = true; toast("Wird nach dem aktuellen Link angehalten"); };
   const go = sh.querySelector("#q-go"); if (go) go.onclick = () => queueRun();
-  sh.querySelector("#q-clean").onclick = () => { Q.items = Q.items.filter(x => !["fertig", "doppelt"].includes(x.status)); queueRefresh(); if (!Q.items.length) { closeSheet(); render(); } };
+  sh.querySelector("#q-clean").onclick = () => { Q.items = Q.items.filter(x => !["fertig", "doppelt", "verworfen"].includes(x.status)); queueRefresh(); if (!Q.items.length) { closeSheet(); render(); } };
   sh.querySelector("#q-close").onclick = () => { closeSheet(); render(); };
 }
+/* ---------- Ähnliche Rezepte und Varianten ---------- */
+function normLink(u) {
+  if (!u) return "";
+  const y = ytId(u); if (y) return "yt:" + y;
+  try { const x = new URL(u); return (x.hostname.replace(/^www\.|^m\./, "") + x.pathname.replace(/\/$/, "")).toLowerCase(); } catch (e) { return String(u).toLowerCase(); }
+}
+function sameLink(a, b) { return !!a && !!b && normLink(a) === normLink(b); }
+const TITLE_STOP = ["mit", "und", "der", "die", "das", "aus", "nach", "art", "von", "fur", "ala", "alla", "einfach", "schnell", "rezept", "beste", "cremig", "cremige", "cremiger"];
+function titleWords(t) { return new Set(words(t).filter(w => w.length > 2 && !TITLE_STOP.includes(w))); }
+function keyIngs(r) { return new Set((r.ingredients || []).filter(i => ingRole(i) === "haupt").map(i => stem(i.name))); }
+function jacc(a, b) { if (!a.size && !b.size) return 0; let n = 0; a.forEach(x => { if (b.has(x)) n++; }); return n / (a.size + b.size - n); }
+function findSimilar(nr) {
+  let best = null;
+  for (const [id, r] of Object.entries(S.recipes)) {
+    const tj = jacc(titleWords(nr.title), titleWords(r.title)), ij = jacc(keyIngs(nr), keyIngs(r));
+    const score = Math.max(tj * 0.55 + ij * 0.45, r.category === nr.category && ij >= 0.7 ? ij : 0, tj >= 0.99 ? 0.9 : 0);
+    if (score >= 0.5 && (ij >= 0.4 || tj >= 0.99) && (!best || score > best.score)) best = { id, score };
+  }
+  return best;
+}
+/* Unterschiede: was ist neu, was fehlt, welche Mengen weichen ab (pro Portion verglichen) */
+function diffRecipes(nr, old) {
+  const map = r => { const m = new Map(); (r.ingredients || []).forEach(i => m.set(stem(i.name), i)); return m; };
+  const A = map(nr), B = map(old), out = { added: [], removed: [], changed: [] };
+  const fa = 1 / (nr.servings || 2), fb = 1 / (old.servings || 2), sv = old.servings || 2;
+  A.forEach((i, k) => { if (!B.has(k)) { if (!i.staple) out.added.push({ ...i, qty: qtyOf(i) != null ? qtyOf(i) * fa * sv : null }); return; }
+    const j = B.get(k), qa = qtyOf(i), qb = qtyOf(j); const ba = base(qa, i.unit), bb = base(qb, j.unit);
+    if (ba && bb && ba.d === bb.d) { const x = ba.v * fa, y = bb.v * fb; if (Math.abs(x - y) / Math.max(x, y) > 0.2) out.changed.push({ name: i.name, from: fmtQty(fromBase(y * sv, j.unit), j.unit), to: fmtQty(fromBase(x * sv, j.unit), j.unit) }); } });
+  B.forEach((j, k) => { if (!A.has(k) && !j.staple) out.removed.push(j); });
+  return out;
+}
+function variantFields(r) { return { name: r.variantName || "Original", ingredients: r.ingredients, steps: r.steps, time: r.time, servings: r.servings, url: r.url || "", swaps: r.swaps || [], swapSel: r.swapSel || {}, sourceNote: r.sourceNote || "", confidence: r.confidence || "" }; }
+function addVariant(id, nr, name) {
+  const r = S.recipes[id]; if (!r) return;
+  r.variants = r.variants || [];
+  r.variants.push({ ...variantFields(nr), name: name || "Variante" });
+  switchVariant(id, r.variants.length - 1);
+}
+function switchVariant(id, i) {
+  const r = S.recipes[id]; const v = r.variants[i]; if (!v) return;
+  const cur = variantFields(r);
+  r.variants[i] = cur;
+  Object.assign(r, { ingredients: v.ingredients, steps: v.steps, time: v.time, servings: v.servings, url: v.url || r.url, swaps: v.swaps || [], swapSel: v.swapSel || {}, sourceNote: v.sourceNote || "", confidence: v.confidence || r.confidence });
+  r.variantName = v.name;
+  delete S.servings[id];
+  Store.save(id);
+}
+function compareSheet(nr, oldId, done) {
+  const old = S.recipes[oldId]; if (!old) { const id = "r_" + uid(); S.recipes[id] = nr; Store.save(id); done && done({ kind: "new", id }); return; }
+  const d = diffRecipes(nr, old);
+  const same = !d.added.length && !d.removed.length && !d.changed.length;
+  const suggestion = d.added[0] ? "mit " + d.added[0].name : d.changed[0] ? "mehr/weniger " + d.changed[0].name : (srcHost(nr.url) ? "von " + srcHost(nr.url) : "Variante");
+  openSheet(`<h3>Ähnliches Rezept gefunden</h3>
+    <p style="margin:0">„${esc(nr.title)}“ ähnelt deinem gespeicherten Rezept <b>„${esc(old.title)}“</b>${old.variants?.length ? ` (${old.variants.length + 1} Varianten)` : ""}.</p>
+    <div class="list">${same ? `<div class="item small">Die Zutaten sind praktisch gleich.</div>` : [
+      ...d.added.map(i => `<div class="item small"><span class="pill good" style="min-width:58px;justify-content:center">neu</span><span class="grow">${esc(i.name)}${qtyOf(i) != null ? " · " + esc(fmtQty(qtyOf(i), i.unit)) : ""}</span></div>`),
+      ...d.removed.map(i => `<div class="item small"><span class="pill neutral" style="min-width:58px;justify-content:center">fehlt</span><span class="grow">${esc(i.name)}</span></div>`),
+      ...d.changed.map(c => `<div class="item small"><span class="pill warn" style="min-width:58px;justify-content:center">Menge</span><span class="grow">${esc(c.name)}: ${esc(c.from)} → ${esc(c.to)}</span></div>`),
+    ].join("")}</div>
+    ${!same ? `<p class="tiny muted" style="margin:0">Mengen umgerechnet auf ${old.servings || 2} Portionen.</p>` : ""}
+    <div class="field"><label for="cmp-name">Name der Variante</label><input id="cmp-name" value="${esc(suggestion)}"></div>
+    <button class="btn primary block" id="cmp-var">Als Variante von „${esc(old.title)}“ speichern</button>
+    <div class="row"><button class="btn grow" id="cmp-new">Als neues Rezept</button><button class="btn grow" id="cmp-no">Nicht speichern</button></div>`, sh => {
+    sh.querySelector("#cmp-var").onclick = () => { addVariant(oldId, nr, sh.querySelector("#cmp-name").value.trim()); closeSheet(); toast("Als Variante gespeichert"); done ? done({ kind: "variant", id: oldId }) : (S.tab = "rezepte", S.openRecipe = oldId, render(), window.scrollTo(0, 0)); };
+    sh.querySelector("#cmp-new").onclick = () => { const id = "r_" + uid(); S.recipes[id] = nr; Store.save(id); closeSheet(); done ? done({ kind: "new", id }) : (S.tab = "rezepte", S.openRecipe = id, render(), window.scrollTo(0, 0)); };
+    sh.querySelector("#cmp-no").onclick = () => { closeSheet(); toast("Nicht gespeichert"); done ? done({ kind: "discard" }) : render(); };
+  });
+}
 async function queueRun() {
-  const Q = S.queue; if (Q.running) return; Q.running = true; Q.stop = false; queueRefresh();
+  const Q = S.queue; if (Q.running) return;
+  if (Q.pausedUntil > Date.now()) { clearTimeout(Q.timer); Q.timer = setTimeout(queueRun, Math.min(Q.pausedUntil - Date.now() + 2000, 2 ** 31 - 1)); queueRefresh(); return; }
+  Q.pausedUntil = 0; Q.pauseReason = "";
+  Q.running = true; Q.stop = false; queueRefresh();
   while (!Q.stop) {
     const it = Q.items.find(x => x.status === "wartet"); if (!it) break;
     it.status = "läuft"; it.msg = ""; queueRefresh();
     try {
-      if (Object.values(S.recipes).some(r => r.url && r.url === it.url)) { it.status = "doppelt"; it.msg = "Ist schon in deinen Rezepten."; }
+      const dupId = !it.force && Object.keys(S.recipes).find(k => sameLink(S.recipes[k].url, it.url) || (S.recipes[k].variants || []).some(v => sameLink(v.url, it.url)));
+      if (dupId) { it.status = "doppelt"; it.recipeId = dupId; it.msg = `Ist schon gespeichert als „${S.recipes[dupId].title}“.`; }
       else if (isVideoUrl(it.url) && !linkReadable(it.url) && !it.note) { it.status = "hinweis"; it.msg = "Das Video kann die KI hier nicht ansehen. Schreib kurz, was gekocht wird."; }
       else {
         const raw = await askClaudeJSON(importPrompt(it.url, "", it.note || "", linkReadable(it.url)), [], { link: it.url });
         const r = cleanRecipe(raw, it.url); if (!r.ingredients.length) throw new Error("leer");
         r.createdAt = Date.now();
         if (typeof AI !== "undefined") { if (ytThumb(it.url)) r.photoUrl = ytThumb(it.url); else if (raw && /^https:\/\//.test(raw.imageUrl || "")) r.photoUrl = raw.imageUrl; }
+        const sim = it.force ? null : findSimilar(r);
+        if (sim) { it.status = "ähnlich"; it.pending = r; it.similar = sim.id; it.title = r.title; it.msg = `Ähnlich wie „${S.recipes[sim.id].title}“.`; queueRefresh(); continue; }
         const id = "r_" + uid(); S.recipes[id] = r; Store.save(id);
         it.status = "fertig"; it.recipeId = id; it.title = r.title;
         if (r.confidence === "niedrig") it.msg = "Nur aus dem Link geschätzt.";
@@ -464,14 +550,21 @@ async function queueRun() {
       }
     } catch (e) {
       if (e && e.code === "unknown_dish") { it.status = "hinweis"; it.msg = "Gericht nicht erkennbar. Schreib kurz, was gekocht wird."; }
-      else if (e && e.code === "rate_limited" && !it.retried) { it.retried = true; it.status = "wartet"; it.msg = "Kurze Pause wegen Limit …"; queueRefresh(); await sleep(30000); continue; }
-      else if (e && ["budget", "not_granted", "bad_key", "no_credit"].includes(e.code)) { it.status = "fehler"; it.msg = sampleErrorText(e); Q.stop = true; }
+      else if (e && e.code === "rate_limited") {
+        it.status = "wartet";
+        const daily = it.retried || /day|daily|tag/i.test(e.detail?.message || "");
+        if (!daily) { it.retried = true; it.msg = "Kurze Pause wegen Limit …"; queueRefresh(); await sleep(60000); continue; }
+        it.msg = ""; Q.pausedUntil = Date.now() + 60 * 60 * 1000; Q.pauseReason = "Tageslimit der KI erreicht"; Q.stop = true;
+      }
+      else if (e && e.code === "budget") { it.status = "wartet"; Q.pausedUntil = addDays(mondayOf(new Date()), 7).getTime() + 5 * 60000; Q.pauseReason = "Dein Wochenlimit ist erreicht"; Q.stop = true; }
+      else if (e && ["not_granted", "bad_key", "no_credit"].includes(e.code)) { it.status = "fehler"; it.msg = sampleErrorText(e); Q.stop = true; }
       else { it.status = "fehler"; it.msg = sampleErrorText(e); }
     }
     queueRefresh();
     if (Q.items.some(x => x.status === "wartet")) await sleep(typeof AI !== "undefined" && AI.provider() === "gemini" ? 4500 : 1500);
   }
   Q.running = false; queueRefresh();
+  if (Q.pausedUntil > Date.now()) { const when = new Date(Q.pausedUntil).toLocaleTimeString("de-AT", { hour: "2-digit", minute: "2-digit" }); toast(`${Q.pauseReason}. Geht ab ca. ${when} weiter.`); clearTimeout(Q.timer); Q.timer = setTimeout(queueRun, Math.min(Q.pausedUntil - Date.now() + 2000, 2 ** 31 - 1)); if (S.tab === "rezepte" && !S.openRecipe && !S.queueSheet) render(); return; }
   if (!Q.items.some(x => x.status === "wartet")) { const n = Q.items.filter(x => x.status === "fertig").length; toast(`Import fertig: ${n} ${n === 1 ? "Rezept" : "Rezepte"}`); if (S.tab === "rezepte" && !S.openRecipe && !S.queueSheet) render(); }
 }
 function confirmSheet(title, text, okLabel, onOk, danger) {
@@ -814,6 +907,16 @@ function importSheet() {
       if (mode === "link" && !url) { status.textContent = "Füge einen Link ein."; return; }
       if (mode === "link" && isVideoUrl(url) && !AI.canWatch(url) && !note && !imgs.length) { status.textContent = "Die App kann Videos nicht ansehen. Füge einen Screenshot vom Video (oder das Titelbild) hinzu oder schreib in die Anmerkung, was gekocht wird, z. B. „Gnocchi mit Tomaten und Feta“."; return; }
       if (mode === "self" && !text && !imgs.length) { status.textContent = "Erzähl kurz, was du gekocht hast, oder füge ein Foto hinzu."; return; }
+      if (mode === "link" && url && !sh.dataset.force) {
+        const dupId = Object.keys(S.recipes).find(k => sameLink(S.recipes[k].url, url) || (S.recipes[k].variants || []).some(v => sameLink(v.url, url)));
+        if (dupId) {
+          status.innerHTML = `<div class="banner" style="margin:0">Diesen Link hast du schon gespeichert: <b>„${esc(S.recipes[dupId].title)}“</b>. Nochmal einlesen?</div>
+            <div class="row" style="margin-top:8px"><button class="btn grow" id="dup-open">Gespeichertes öffnen</button><button class="btn grow" id="dup-again">Trotzdem einlesen</button></div>`;
+          sh.querySelector("#dup-open").onclick = () => { closeSheet(); S.tab = "rezepte"; S.openRecipe = dupId; render(); window.scrollTo(0, 0); };
+          sh.querySelector("#dup-again").onclick = () => { sh.dataset.force = "1"; status.innerHTML = ""; sh.querySelector("#i-go").click(); };
+          return;
+        }
+      }
       const go = sh.querySelector("#i-go"); go.disabled = true; go.innerHTML = `<span class="spinner"></span> Die KI schreibt das Rezept …`;
       status.textContent = "";
       try {
@@ -826,6 +929,8 @@ function importSheet() {
         if (photos[0]) r.photo = photos[0].small;
         else if (ytThumb(url)) r.photoUrl = ytThumb(url);
         else if (raw && /^https:\/\//.test(raw.imageUrl || "")) r.photoUrl = raw.imageUrl;
+        const sim = sh.dataset.force ? null : findSimilar(r);
+        if (sim) { closeSheet(); compareSheet(r, sim.id); return; }
         const id = "r_" + uid();
         S.recipes[id] = r; Store.save(id);
         closeSheet(); S.tab = "rezepte"; S.openRecipe = id; render(); window.scrollTo(0, 0);
@@ -854,6 +959,7 @@ function viewRecipe() {
     <div class="row" style="flex-wrap:wrap"><button class="linkbtn" id="d-photo">${r.photo || r.photoUrl ? "Foto ändern" : "+ Foto hinzufügen"}</button>${r.photo || r.photoUrl ? `<button class="linkbtn" id="d-photo-del" style="color:var(--muted)">Foto entfernen</button>` : ""}${!r.photo && !r.photoUrl && ytThumb(r.url) ? `<a class="small" href="${esc(ytThumb(r.url))}" target="_blank" rel="noopener">YouTube-Titelbild öffnen</a>` : ""}</div>
     ${!r.photo && !r.photoUrl && ytThumb(r.url) ? `<p class="muted tiny" style="margin:0">Titelbild öffnen, gedrückt halten, „Bild sichern“, dann über „+ Foto hinzufügen“ einsetzen.</p>` : ""}
     <h2>${esc(r.title)}</h2>
+    ${r.variants && r.variants.length ? `<div class="chips" role="group" aria-label="Varianten" style="flex-wrap:wrap"><button class="chip" aria-pressed="true">${esc(r.variantName || "Original")}</button>${r.variants.map((v, i) => `<button class="chip" data-variant="${i}" aria-pressed="false">${esc(v.name)}</button>`).join("")}</div>` : ""}
     <div class="row small" style="flex-wrap:wrap;gap:6px">${dietPill(dietOf(r))}<span class="pill neutral">${esc(r.category)}</span></div>
     ${r.url ? `<a class="btn srcbtn" href="${esc(r.url)}" target="_blank" rel="noopener">${ytId(r.url) || /youtu|instagram|tiktok/i.test(r.url) ? ICON.play + " Video ansehen" : ICON.link + " Original-Rezept öffnen"}<span class="muted tiny" style="font-weight:500;margin-left:auto">${esc(srcHost(r.url))}</span></a>` : ""}
     ${r.confidence === "niedrig" ? `<div class="banner">${esc(r.sourceNote || "Aus dem Link geschätzt.")} Füge über „Mit KI anpassen“ den Originaltext ein, dann wird es genau.</div>` : ""}
@@ -904,6 +1010,7 @@ function mountRecipe() {
   const id = S.openRecipe, r = getR(id);
   const sv = S.servings[id] || r.servings, f = sv / r.servings;
   $("#d-back").onclick = () => { S.openRecipe = null; render(); };
+  document.querySelectorAll("[data-variant]").forEach(b => b.onclick = () => { switchVariant(id, +b.dataset.variant); render(); toast(`Variante: ${r.variantName}`); });
   const kp = $("#d-keep"); if (kp) kp.onclick = () => { S.recipes[id] = r; delete S.drafts[id]; Store.save(id); render(); toast("In deinen Rezepten gespeichert"); };
   $("#d-plan").onclick = () => { if (S.drafts[id]) { S.recipes[id] = r; delete S.drafts[id]; Store.save(id); } planPickDaySheet(id); };
   document.querySelectorAll("[data-swap]").forEach(b => b.onclick = () => {
@@ -1746,6 +1853,6 @@ function mountSettings() {
 function startApp() {
   if (location.hash === "#einkauf") S.tab = "einkauf";
   render();
-  Store.init().then(() => { AI.init(); render(); Push.changed(); });
+  Store.init().then(() => { AI.init(); render(); Push.changed(); if (S.queue.items.some(x => x.status === "wartet")) queueRun(); });
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 }

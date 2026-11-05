@@ -55,6 +55,8 @@ const Store = {
       S.ai = Object.assign({ provider: "gemini", keys: {}, models: {}, prices: {}, budget: 0 }, all.ai || {});
       S.usage = all.usage || { days: {} };
       S.push = Object.assign({ server: "", on: false, morning: "09:00", evening: "18:00", device: "" }, all.push || {});
+      const q = all.queue || {};
+      S.queue = { items: (q.items || []).map(x => x.status === "läuft" ? { ...x, status: "wartet" } : x), pausedUntil: q.pausedUntil || 0, pauseReason: q.pauseReason || "", running: false, stop: false };
       S.recipes = {};
       Object.keys(all).forEach(k => { if (k.startsWith("r_")) S.recipes[k] = all[k]; });
       S.storeMode = "local"; S.storeNote = "";
@@ -74,6 +76,7 @@ const Store = {
     if (key === "ai") return S.ai;
     if (key === "usage") return S.usage;
     if (key === "push") return S.push;
+    if (key === "queue") return { items: S.queue.items, pausedUntil: S.queue.pausedUntil || 0, pauseReason: S.queue.pauseReason || "" };
     return S.recipes[key] ? S.recipes[key] : DEL;
   },
   save(key) {
@@ -88,7 +91,7 @@ const Store = {
   async exportAll() {
     const all = await IDB.all();
     delete all.ai; /* API-Schlüssel nie mit exportieren */
-    delete all.push; delete all.reminders;
+    delete all.push; delete all.reminders; delete all.queue;
     return { app: "essensapp", version: 1, exportedAt: new Date().toISOString(), data: all };
   },
   async importAll(json, replace) {
